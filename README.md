@@ -2,7 +2,7 @@
 
 ## Overview
 
-This project demonstrates how to drive a VFD (Vacuum Fluorescent Display) using a Raspberry Pi Pico W and the MAXIM MAX6921AWI chip. The display setup includes a 7-segment display with a decimal point and 8 grids, controlled using a 20-bit buffer, leaving room for additional control logic. 
+This project demonstrates how to drive a VFD (Vacuum Fluorescent Display) using a Raspberry Pi Pico W and the MAXIM MAX6921AWI chip. The display setup includes a 7-segment display with a decimal point and 8 grids, controlled using a 20-bit buffer, leaving room for additional control logic. The VFD of choice this time around is the Soviet (Sovtek) IV-18 a.k.a _ИВ-18 (Совтек)_. 
 
 ## Pin Mapping and Layout
 
