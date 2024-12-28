@@ -53,32 +53,77 @@ const uint SPI_L = 13; // Latch pin (GPIO)
 //     Pin 2 = H (Decimal point)hru H, and those outputs
 //                                  will be wired to the appropriate VFD pinout.
 
-void send_to_vfd() {
-    // Prepare the data as three separate bytes.
-    // The MAX6921AWI chip requires 20 bits of data, which must be sent as padded 8-bit frames.
-    // Padding ensures proper alignment since the chip reads the least significant bit (LSB) first.
-    // To determine the padding required:
-    //    n - (x mod n) = padding, where:
-    //        n = frame size (8 bits),
-    //        x = data size (20 bits in this case).
-    // Example: For 20 bits, padding = 8 - (20 mod 8) = 4 bits.
-    // This padding must precede the data in the transmission buffer for correct operation.
 
-    uint8_t vfd_data1 = 0b00001010;    // First 8 bits (includes 4 bits of padding).
-    uint8_t vfd_data2 = 0b10101010;    // Next 8 bits of the data.
-    uint8_t vfd_data3 = 0b10101010;    // Remaining 4 bits padded to a full byte.
+// Define the 7-segment display encodings (using only 8 bits for each digit)
+uint8_t segment_control[] = {
+    0b00111111, // 0: A B C D E F (All segments except G)
+    0b00000110, // 1: B C
+    0b01011011, // 2: A B D E G
+    0b01001111, // 3: A B C D G
+    0b01100110, // 4: B C F G
+    0b01101101, // 5: A C D F G
+    0b01111101, // 6: A C D E F G
+    0b00000111, // 7: A B C
+    0b01111111, // 8: A B C D E F G (All segments)
+    0b01101111  // 9: A B C D F G
+};
 
-    // Transmit the data via SPI.
-    spi_write_blocking(SPI_PORT, &vfd_data1, 1);  // Send first byte.
-    spi_write_blocking(SPI_PORT, &vfd_data2, 1);  // Send second byte.
-    spi_write_blocking(SPI_PORT, &vfd_data3, 1);  // Send third byte.
-
-    // Toggle the latch pin to transfer the data to the VFD outputs.
-    gpio_put(SPI_L, 1);  // Set latch pin high.
-    sleep_us(1);         // Short delay for latch operation.
-    gpio_put(SPI_L, 0);  // Set latch pin low.
+uint8_t grid_control[] = {
+    0b00000001, // grid 1
+    0b00000010, // grid 2
+    0b00000100, // grid 3
+    0b00001000, // grid 4
+    0b00010000, // grid 5
+    0b00100000, // grid 6
+    0b01000000, // grid 7
+    0b10000000  // grid 8
 }
 
+
+// Function to combine grid control and segment control into a 16-bit value
+uint16_t combine_grid_segment(uint8_t digit, uint8_t grid) {
+    // Ensure the digit and grid are within valid bounds
+    if (digit > 9 || grid > 7) {
+        printf("Invalid digit or grid value\n");
+        return 0;
+    }
+
+    // Shift the grid control to the high byte (left by 8 bits) and combine with segment control
+    uint16_t combined_value = (grid_control[grid] << 8) | segment_control[digit];
+    return combined_value;
+}
+
+void latch_data() {
+    // Toggle the latch pin to transfer the data to the VFD outputs
+    gpio_put(SPI_L,1);  // Set latch pin high.
+    sleep_us(1);        // Short delay for latch operation... plenty of time to wait.
+    gpio_put(SPI_L, 0); // Set latch pin low.
+}
+
+// Function to split 20-bit data into three padded bytes
+void prepare_vfd_data(uint32_t control_sequence, uint8_t *frame1, uint8_t *frame2, uint8_t *frame3) {
+
+    uint32_t padded_seq = (uint32_t) (control_sequence << 4); //pad the Least Sig Bits by 4 since adding them at the end will cause overwriting
+                                                              // essentially we will have to overwrite, so we put the padding first so we overwrite the padding with our desired bits.
+    *frame1 = (uint8_t) (padded_seq & 0xFF);         //select the first 8 bits
+    *frame2 = (uint8_t) ((padded_seq >> 8) & 0xFF);  //shift the next 8 least significant bits right, and then select them
+    *frame3 = (uint8_t) ((padded_seq >> 16) & 0xFF); //shift the entire bit seq to the right 16 bits to grab the last 8 bits
+}
+
+// Function to send 20-bit data to the VFD via SPI
+void send_to_vfd(uint32_t control_sequence) {
+    uint8_t vfd_data1, vfd_data2, vfd_data3;
+
+    // Prepare the data frames
+    prepare_vfd_data(control_sequence, &vfd_data1, &vfd_data2, &vfd_data3);
+
+    // Transmit the data via SPI
+    spi_write_blocking(SPI_PORT, &vfd_data1, 1);  // Send first byte
+    spi_write_blocking(SPI_PORT, &vfd_data2, 1);  // Send second byte
+    spi_write_blocking(SPI_PORT, &vfd_data3, 1);  // Send third byte
+
+    latch_data();
+}
 
 int main() {
     stdio_init_all();
@@ -97,7 +142,13 @@ int main() {
     gpio_init(SPI_L);
     gpio_set_dir(SPI_L, GPIO_OUT);
 
-    send_to_vfd();
+    // Example control sequence (20 bits)
+    // The lower 8 bits control segments, and the next 8 bits control grids.
+    // Ensure only one grid is active high at a time.
+    uint32_t control_sequence = 0b00000001111000000101; // Example sequence
+
+    // Send the sequence to the VFD
+    send_to_vfd(combine_grid_segment(3,3));
 
     return 0;
 }
