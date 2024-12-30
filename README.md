@@ -138,3 +138,4 @@ void write_vfd(uint8_t digit, uint8_t grid) {
 - With the data flipped appropriately, and the byte order sent backwards, we achieve intercommunication with the VFD driver chip
   - Data segments are 0-9, so you must reverse them 9-0. Grid segments are the same. It should read PADDING + GRIDCONT + SEGMCONT => CONTR-SEQ
   - CONTR-SEQ is split into three bytes, then sent VIA SPI bus.
+  - SPI does not have a 3rd wire, but since the maxim chip does not display any output until the latch pin is triggered, we added a 3rd pin for sending a latch signal to. It is pretty fast, so 1 microsecond was used as a buffer between setting it high and then back to low
