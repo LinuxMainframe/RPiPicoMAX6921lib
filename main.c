@@ -1,3 +1,39 @@
+/*********************************************************************************
+ * Authors: Aidan Bradley and Andrew Korman
+ * Years: 2024-2025
+ * 
+ * Description:
+ * This program was written in C to drive a triode-based Vacuum Fluorescent Display 
+ * (VFD) system using the Maxim MAX6921 VFD driver chip. The code is designed for 
+ * use on the Raspberry Pi Pico microcontroller and utilizes the SPI interface to 
+ * communicate with the VFD chip. It implements real-time clock (RTC) functionality 
+ * for timekeeping and allows user interaction via button inputs for setting hours, 
+ * minutes, and seconds.
+ * 
+ * Key Features:
+ * - Real-time clock functionality for dynamic time display.
+ * - Button-based input for adjusting time with debounce handling.
+ * - SPI communication to drive the MAX6921 VFD chip.
+ * - Seven-segment display formatting with control over segment illumination and 
+ *   grid selection.
+ * - Modular and well-commented functions for initializing hardware, updating the 
+ *   VFD, and managing user input.
+ * 
+ * Dependencies:
+ * - Raspberry Pi Pico SDK
+ * - Standard C libraries: stdio.h, string.h
+ * - Hardware-specific libraries: pico/stdlib.h, hardware/spi.h, hardware/rtc.h
+ * 
+ * Note:
+ * This code assumes a specific hardware setup, including pin assignments for SPI, 
+ * latch, and button inputs. Ensure proper connections and configurations when 
+ * deploying this code.
+ * 
+ * Disclaimer:
+ * This code was developed by Aidan Bradley and Andrew Korman and is provided as-is. 
+ *********************************************************************************/
+
+
 #include <stdio.h>
 #include <string.h>
 #include "pico/stdlib.h"
