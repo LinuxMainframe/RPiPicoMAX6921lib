@@ -1,141 +1,325 @@
-# Simple MAXIM MAX6921AWI Driver Code using Raspberry Pi Pico W
+# max6921 - VFD Driver Library for Raspberry Pi Pico
 
-## Overview
+Clean C library for controlling Russian IV-18 VFD displays using the Maxim MAX6921 driver chip on Raspberry Pi Pico.
 
-This project demonstrates how to drive a VFD (Vacuum Fluorescent Display) using a Raspberry Pi Pico W and the MAXIM MAX6921AWI chip. The display setup includes a 7-segment display with a decimal point and 8 grids, controlled using a 20-bit buffer, leaving room for additional control logic. The VFD of choice this time around is the Soviet (Sovtek) IV-18 a.k.a _ИВ-18 (Совтек)_. 
+## How It Works
 
-## Pin Mapping and Layout
+### The MAX6921 Architecture
 
-### Mapping Layout
+The MAX6921 is a 20-bit serial VFD controller that uses **shift-register serial communication** to control Russian IV-18 vacuum fluorescent displays. It uses a compact 3-wire SPI interface requiring minimal GPIO pins.
 
-- **Display Details**:
-  - The display consists of a 7-segment display + 1 dot (decimal point).
-  - There are ~~8~~ 9 grids (digits), requiring ~~16~~ 17 pins for control (8 segment pins + ~~8~~ 9 grid pins).
-  - Only one grid pin is active high at a time, leaving ~~4~~ 3 unused bits, which can be reserved for future use.
-
-- **Pin Mapping**:
-  - **Pins 0–7**: Drive the segments (7-segment + dot).
-  - **Pins 8–16**: Control the grids (digits).
-
-- **Buffer Details**:
-  - This setup uses 2 bytes + 1 bit (~~16~~ 17 bits), but the MAXIM MAX6921AWI chip requires 20 bits.
-  - The ~~4~~ 3 remaining bits can be padded or reserved for control logic.
-  - The chip's clear pin can be triggered via the Pico, potentially using the last 4 output pins. 
-
-  **Voltage Note**: Driving the clear pin requires careful consideration of the bus voltage (e.g., 25V for IV-18). A resistor ladder can step down voltages if needed.
-
----
-
-### VFD Segment Display Matrix
-
-#### Physical VFD Pin Mapping:
+**20-Bit Control Word:**
 ```
- --         <- Top segment (Pin 12)
-|  |        <- Left (Pin 11) and Right (Pin 10) middle segments
- --         <- Middle segment (Pin 9)
-|  |        <- Left (Pin 5) and Right (Pin 4) bottom segments
- -- .       <- Bottom segment (Pin 3) and decimal point (Pin 2)
+Bit 19 18 17 | 16 15 14 13 12 11 10 9 8 | 7 6 5 4 3 2 1 0
+[   CMD    |        Grid Select      | Segment Pattern]
+ 3 bits    |         9 bits          |     8 bits
 ```
 
-#### Logical Segment Mapping (A–H):
+- **Bits 19-17**: Command bits (user-defined control codes 0-7)
+- **Bits 16-8**: Grid selection (9 bits, one bit per digit position 0-8)
+- **Bits 7-0**: Segment pattern (8 bits controlling display segments A-F, G, DP)
+
+### Communication
+
+The library communicates with the MAX6921 using a 3-wire SPI interface:
+
+**Pins (default GPIO):**
+- **GPIO 11 (MOSI)** - Serial data input
+- **GPIO 10 (SCK)** - Serial clock
+- **GPIO 13 (Latch)** - Output latch pulse
+
+**Protocol:**
+1. Construct a 20-bit control word: [COMMAND(3) | GRID(9) | SEGMENTS(8)]
+2. Prefix with 4 padding bits for byte-aligned transmission
+3. Shift via SPI (transmitted as 3 bytes, MSB first): [4-bit padding | 20-bit control word]
+4. Pulse the latch pin to apply the output
+5. Wait before next transmission
+
+**Example: Display digit 5 on grid 0**
 ```
- --         <- Segment A (Top)
-|  |        <- Segments F (Left) and B (Right)
- --         <- Segment G (Middle)
-|  |        <- Segments E (Left) and C (Right)
- -- .       <- Segment D (Bottom) and H (Decimal point)
+Bits 19-17: 000 (command = 0, display only)
+Bits 16-8:  100000000 (grid 0 active)
+Bits 7-0:   01101101 (segments for digit 5)
+Result: 0x08D (20-bit value)
 ```
-#### Alphanumeric Segment Pinout:
-| VFD Pin | Segment |
-|---------|---------|
-| Pin 12  | A       |
-| Pin 11  | F       |
-| Pin 10  | B       |
-| Pin 9   | G       |
-| Pin 5   | E       |
-| Pin 4   | C       |
-| Pin 3   | D       |
-| Pin 2   | H (Decimal Point) |
-| Pin 1, 13 | Heating elements (not coded) |
 
----
+### Custom Commands
 
-## Control Logic and Commands
+The 3 command bits (19-17) can be used for custom functionality. Users can define their own 8 command codes (0-7) to:
+- Control external logic gates or analog circuits
+- Trigger digital signals via separate pins
+- Implement backup functionality if MAX6921 pins fail
+- Send custom control signals alongside display updates
 
-The remaining ~~4~~ 3 bits of the 20-bit buffer can be used for control logic. Here is the mapping of the control bits:
+The command bits are independent of display data and can be sent standalone or combined with any grid/segment pattern.
 
-### Control Bits Command Table
+### Display Multiplexing
 
-| Decimal | Binary | Hexadecimal | Command Description |
-|---------|--------|-------------|---------------------|
-| 0       | 000   | 0x0         | N/A                 |
-| 1       | 001   | 0x1         | N/A                 |
-| 2       | 010   | 0x2         | N/A                 |
-| 3       | 011   | 0x3         | N/A                 |
-| 4       | 100   | 0x4         | N/A                 |
-| 5       | 101   | 0x5         | N/A                 |
-| 6       | 110   | 0x6         | N/A                 |
-| 7       | 111   | 0x7         | N/A                 |
+The IV-18 display has **9 grids** (digit positions) and requires sequential addressing:
+1. Send 20-bit word activating grid 0 with its segment pattern
+2. Wait ~1.5ms for display to stabilize
+3. Send 20-bit word activating grid 1 with its segment pattern
+4. Repeat for all 9 grids
 
----
+This creates a **multiplexed display** where only one grid is active at a time, but they cycle quickly enough (~13.5ms per complete refresh) to appear as all digits lit simultaneously.
 
-## Example Driver Code
+### Data Flow
 
-### Sending Data to the VFD
+```
+Application Layer
+      ↓
+vfd_write_digit/string → Display Buffer (9 bytes)
+      ↓
+vfd_refresh()
+      ↓
+For each grid 0-8:
+  - Construct 20-bit word (command + grid + segments)
+  - Transmit via SPI
+  - Pulse latch pin
+  - Wait refresh_interval_us
+```
+
+## Hardware
+
+**Required:**
+- Raspberry Pi Pico or Pico W
+- Maxim MAX6921AWI driver chip
+- Russian IV-18 VFD display (or compatible)
+- 3-wire SPI: MOSI (GPIO 11), SCK (GPIO 10), Latch (GPIO 13)
+- Power supply: 12V for filament, 5V logic
+
+**Display Specs:**
+- 9 grids (digit positions)
+- 7 segments + decimal point per grid
+- 20-bit control word (3 command bits + 9 grid bits + 8 segment bits)
+
+## Quick Start
+
+### Installation
+
+Add to your project:
+```bash
+git submodule add https://github.com/yourusername/libpico_vfd6921.git max6921
+```
+
+Update CMakeLists.txt:
+```cmake
+add_subdirectory(max6921)
+target_link_libraries(your_app max6921)
+```
+
+### Basic Usage
+
 ```c
-// Segment control and grid control arrays
-uint8_t segment_control[] = {
-  0b00111111, // 0: A B C D E F 
-  0b00000110, // 1: B C
-  0b01011011, // 2: A B D E G
-  0b01001111, // 3: A B C D G
-  0b01100110, // 4: B C F G
-  0b01101101, // 5: A C D F G
-  0b01111101, // 6: A C D E F G
-  0b00000111, // 7: A B C
-  0b01111111, // 8: A B C D E F G
-  0b01101111,  // 9: A B C D F G
-  0b10000000, // decimal: H (10)
-  0b01000000, // dash: G (11)
-  0b00000000 //blank (12)
-};
+#include "max6921.h"
+#include "pico/stdlib.h"
 
-uint16_t grid_control[] = {
-  0b100000000, //grid 0 (decimal)
-  0b010000000, //grid 1
-  0b001000000, //grid 2
-  0b000100000, //grid 3
-  0b000010000, //grid 4
-  0b000001000, //grid 5
-  0b000000100, //grid 6
-  0b000000010, //grid 7
-  0b000000001 //grid 8
-};
+int main(void) {
+    // Initialize with default settings
+    vfd_error_t err = vfd_init(NULL);
+    if (err != VFD_OK) {
+        return 1;
+    }
 
-//function to update the vfd
-void write_vfd(uint8_t digit, uint8_t grid) {
-  combined_data = (grid_control[grid] << 8) | segment_control[digit];
-  //printf("Combined Data(decimal): %u\n", combined_data);
-  
-  data[0] = (combined_data >> 16) & 0xFF;
-  data[1] = (combined_data >> 8) & 0xFF;   
-  data[2] = combined_data & 0xFF;  
-  
-  //printf("Array contents:\n");
-  //printf("byte1: %u\n", data[0]);
-  //printf("byte2: %u\n", data[1]);
-  //printf("byte3: %u\n", data[2]);
+    // Write string to display buffer
+    vfd_write_string("123456789");
+    
+    // Serialize and transmit via SPI
+    vfd_refresh();
 
-  spi_write_blocking(SPI_PORT, data, 3);
-  
-  gpio_put(SPI_L, 1);
-  sleep_us(1);
-  gpio_put(SPI_L, 0);
+    while (1) {
+        sleep_ms(1000);
+    }
+    return 0;
 }
 ```
-- Sending data via SPI to the Maxim chip requires the data to be loaded backwards, hence sending the high byte first
-- Data separately to that, the data must be sent LSB style via SPI, which was taken care of by swapping the order of the predefined segment and grid code
-- With the data flipped appropriately, and the byte order sent backwards, we achieve intercommunication with the VFD driver chip
-  - Data segments are 0-9, so you must reverse them 9-0. Grid segments are the same. It should read PADDING + GRIDCONT + SEGMCONT => CONTR-SEQ
-  - CONTR-SEQ is split into three bytes, then sent VIA SPI bus.
-  - SPI does not have a 3rd wire, but since the maxim chip does not display any output until the latch pin is triggered, we added a 3rd pin for sending a latch signal to. It is pretty fast, so 1 microsecond was used as a buffer between setting it high and then back to low
+
+## API Reference
+
+### Initialization
+
+```c
+vfd_config_t vfd_default_config(void);
+vfd_error_t vfd_init(const vfd_config_t *config);
+bool vfd_is_initialized(void);
+vfd_error_t vfd_deinit(void);
+```
+
+Initialize the library before any display operations. `vfd_init(NULL)` uses default GPIO pins (11, 10, 13) and 2MHz SPI.
+
+### Display Control
+
+```c
+vfd_error_t vfd_write_digit(uint8_t grid, uint8_t digit);
+vfd_error_t vfd_write_segments(uint8_t grid, uint8_t segments);
+vfd_error_t vfd_read_segments(uint8_t grid, uint8_t *segments);
+vfd_error_t vfd_write_string(const char *str);
+vfd_error_t vfd_refresh(void);
+vfd_error_t vfd_clear(void);
+```
+
+Write operations modify the internal 9-byte display buffer. Call `vfd_refresh()` to serialize and transmit via SPI.
+
+### Buffer Management
+
+```c
+vfd_display_buffer_t *vfd_get_buffer(void);
+vfd_error_t vfd_fill_buffer(uint8_t segments);
+```
+
+Direct buffer access for advanced usage. Buffer changes take effect after `vfd_refresh()`.
+
+### Custom Commands
+
+```c
+vfd_error_t vfd_send_control_command(const vfd_control_command_t *cmd);
+```
+
+Send custom commands (0-7) via the 3 command bits. Users can implement their own command handling via callbacks or external logic.
+
+### Utilities
+
+```c
+const char *vfd_strerror(vfd_error_t error);
+int vfd_segments_to_string(uint8_t segments, char *buffer, int buffer_size);
+```
+
+## Configuration
+
+Customize hardware pins and SPI timing:
+
+```c
+vfd_config_t config = vfd_default_config();
+config.pin_spi_tx = 11;           // MOSI pin (data input)
+config.pin_spi_clk = 10;          // SCK pin (serial clock)
+config.pin_latch = 13;            // Latch pin (output enable)
+config.spi_baudrate = 2000000;    // 2 MHz serial clock
+config.refresh_interval_us = 1500; // Microseconds between grid updates
+
+vfd_init(&config);
+```
+
+**Timing Notes:**
+- Lower `refresh_interval_us` = faster refresh, but higher CPU usage
+- Minimum recommended: 1000 µs (9ms full refresh)
+- Default: 1500 µs (13.5ms full refresh)
+- Higher values may cause flicker
+
+## Error Codes
+
+```c
+VFD_OK                  /* Operation successful */
+VFD_ERR_INVALID_PARAM   /* Invalid parameter provided */
+VFD_ERR_NOT_INITIALIZED /* VFD not initialized */
+VFD_ERR_INVALID_GRID    /* Grid index out of range (0-8) */
+VFD_ERR_INVALID_SEGMENT /* Segment value out of range */
+VFD_ERR_HARDWARE        /* Hardware initialization failed */
+```
+
+## Supported Display Characters
+
+- **0-9**: Numeric digits
+- **-**: Dash/minus symbol
+- **.**: Decimal point (applies to previous digit)
+- **space**: Blank position
+
+Example:
+```c
+vfd_write_string("123.45");  // Displays: 123.45
+vfd_write_string("12 34");   // Displays: 12 34 (space between)
+vfd_write_string("-99");     // Displays: -99
+```
+
+## Segment Layout
+
+Each digit has 8 controllable segments:
+
+```
+ --A--
+|     |
+F     B
+|--G--|
+E     C
+|--D--|
+  dp H
+```
+
+Access segments directly for custom patterns:
+
+```c
+uint8_t custom_pattern = 0b01111111;  // All segments on except DP
+vfd_write_segments(0, custom_pattern);
+vfd_refresh();
+```
+
+## Implementation Details
+
+The MAX6921 is a 20-bit shift register. Since SPI communication uses whole bytes, the library transmits 3 bytes (24 bits) total:
+- **4 prefix bits** (padding, sent first)
+- **20-bit control word** (shifted into position by the padding bits)
+
+The 4 padding bits are transmitted first via MSB-first SPI protocol, which shifts them through the shift register and positions the 20-bit control word correctly for latching.
+
+```c
+// Build 20-bit word: [command (3) | grid (9) | segments (8)]
+uint32_t control_word = (command << 17) | (grid_pattern << 8) | segments;
+
+// Prepare 3 bytes for transmission (24 bits total)
+// Format: [4-bit padding | 20-bit control word]
+spi_data[0] = (control_word >> 16) & 0xFF;  // Byte 1: includes 4 padding bits
+spi_data[1] = (control_word >> 8) & 0xFF;   // Byte 2
+spi_data[2] = control_word & 0xFF;          // Byte 3
+
+// Transmit via SPI (3 bytes, MSB first)
+spi_write_blocking(spi_port, spi_data, 3);
+
+// Pulse latch pin to apply
+gpio_put(latch_pin, 1);
+sleep_us(1);
+gpio_put(latch_pin, 0);
+```
+
+By default, the command bits are set to 0 (display only). Custom command codes can be ORed with display data for flexible integration.
+
+## Examples
+
+See the `examples/` directory for complete working examples:
+- `basic.c` - Simple digit cycling
+- `display_time.c` - Display formatted numbers with timing
+
+## Testing
+
+Use the TESTING.md file in examples/ directory for comprehensive test procedures and verification steps.
+
+## Building
+
+Standard CMake build:
+
+```bash
+mkdir build
+cd build
+cmake -DPICO_SDK_PATH=/path/to/pico-sdk ..
+make
+```
+
+## Performance
+
+- **Full display refresh**: ~13.5ms (9 grids × 1.5ms each)
+- **SPI clock**: 2 MHz (default, configurable)
+- **Memory usage**: ~50 bytes driver state + 9 bytes display buffer
+- **Latency**: <1µs from vfd_write_* to buffer update; 13.5ms to display
+
+## Compatibility
+
+- C11 standard
+- C++ compatible (extern "C" wrapper)
+- Raspberry Pi Pico and Pico W
+- Other platforms with similar SPI and GPIO (partial porting needed)
+
+## License
+
+See LICENSE file for details.
+
+## Support
+
+For issues or questions, refer to CHANGELOG.md for recent changes and known issues.
